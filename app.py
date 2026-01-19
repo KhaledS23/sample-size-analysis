@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import altair as alt
+import vl_convert as vlc
 
 st.set_page_config(page_title="Defect Analysis Tool", layout="wide")
 
@@ -369,12 +370,61 @@ if uploaded_file is not None:
                  
         if high_ppm_orders:
             df_high_ppm = pd.DataFrame(high_ppm_orders).sort_values('PPM', ascending=False)
-            # Style High PPM Table
-            st.dataframe(
-                df_high_ppm.style.format({'PPM': "{:.0f}", 'Gross Parts (Good)': "{:.0f}"})
-                     .set_properties(**{'background-color': app_bg_color, 'color': app_text_color}),
-                use_container_width=True,
-                hide_index=True
+            
+            # View Toggle
+            order_view_format = st.radio("View Format", ["Table", "Bar Graph"], horizontal=True, key="high_ppm_view_format")
+            
+            if order_view_format == "Table":
+                # Style High PPM Table
+                st.dataframe(
+                    df_high_ppm.style.format({'PPM': "{:.0f}", 'Gross Parts (Good)': "{:.0f}"})
+                         .set_properties(**{'background-color': app_bg_color, 'color': app_text_color}),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                 # Altair Bar Chart
+                 import altair as alt
+                 
+                 # Create a label combining columns if needed or just use Order Number
+                 # Ensure Order Number is string for categorical axis
+                 df_high_ppm['Order Labels'] = df_high_ppm['Order Number'].astype(str)
+                 
+                 order_chart = alt.Chart(df_high_ppm).mark_bar().encode(
+                     x=alt.X('PPM', title='PPM'),
+                     y=alt.Y('Order Labels', sort='-x', title='Order Number', axis=alt.Axis(labelLimit=1000)),
+                     tooltip=['Order Number', alt.Tooltip('PPM', format=',.0f'), alt.Tooltip('Gross Parts (Good)', format=',.0f')]
+                 ).properties(
+                     title=f"High PPM Orders ({selected_line})",
+                     height=max(300, len(df_high_ppm) * 30)
+                 ).configure(background=app_bg_color)
+
+                 if theme_mode:
+                    order_chart = order_chart.configure_axis(
+                        labelColor='white', titleColor='white', gridColor='#444'
+                    ).configure_title(color='white')
+                 else:
+                    order_chart = order_chart.configure_axis(
+                        labelColor='black', titleColor='black', gridColor='#eee'
+                    ).configure_title(color='black')
+                 
+                 st.altair_chart(order_chart, use_container_width=True)
+                 
+                 # Download Graph Image
+                 try:
+                    png_order = vlc.vegalite_to_png(order_chart.to_json(), scale=2)
+                    st.download_button("Download Graph as PNG", png_order, "high_ppm_orders_graph.png", "image/png", key='dl_img_order')
+                 except Exception as e:
+                    st.error(f"Could not generate image: {e}")
+            
+            # Download Button for High PPM Orders
+            csv_high_ppm = df_high_ppm.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "Download High PPM Orders as CSV",
+                csv_high_ppm,
+                "high_ppm_orders.csv",
+                "text/csv",
+                key='download-high-ppm'
             )
         else:
             st.success("No orders exceed 2500 PPM on this line.")
@@ -501,6 +551,14 @@ if uploaded_file is not None:
                     ).configure_title(color='black')
 
                 st.altair_chart(chart, use_container_width=True)
+
+                # Download Scatter Plot Image
+                try:
+                    png_scatter = vlc.vegalite_to_png(chart.to_json(), scale=2)
+                    st.download_button("Download Scatter Plot as PNG", png_scatter, "gcas_scatter.png", "image/png", key='dl_img_scatter')
+                except Exception as e:
+                    # Fallback or silent fail if needed, but error is better for debug
+                    st.caption(f"Image download unavailable: {e}")
                 
                 # Display Stats
                 st.markdown("#### Quadrant Analysis")
@@ -568,12 +626,48 @@ if uploaded_file is not None:
         
         if not offenders.empty:
             st.info(f"Showing {len(offenders)} offenders for {table_line_option}")
-            st.dataframe(
-                offenders.style.format({'PPM': "{:.0f}", 'Total Good Parts': "{:.0f}"})
-                     .set_properties(**{'background-color': app_bg_color, 'color': app_text_color}),
-                use_container_width=True,
-                hide_index=True
-            )
+            
+            # View Toggle
+            gcas_view_format = st.radio("View Format", ["Table", "Bar Graph"], horizontal=True, key="gcas_offenders_view_format")
+            
+            if gcas_view_format == "Table":
+                st.dataframe(
+                    offenders.style.format({'PPM': "{:.0f}", 'Total Good Parts': "{:.0f}"})
+                         .set_properties(**{'background-color': app_bg_color, 'color': app_text_color}),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                # Altair Bar Chart
+                # Combine GCAS and Description for Label
+                offenders['Label'] = offenders['GCAS'].astype(str) + " - " + offenders['Description'].astype(str)
+                
+                gcas_chart = alt.Chart(offenders).mark_bar().encode(
+                    x=alt.X('PPM', title='PPM'),
+                    y=alt.Y('Label', sort='-x', title='GCAS - Description', axis=alt.Axis(labelLimit=1000)),
+                    tooltip=['GCAS', 'Description', alt.Tooltip('PPM', format=',.0f'), alt.Tooltip('Total Good Parts', format=',.0f')]
+                ).properties(
+                    title=f"Top GCAS Offenders ({table_line_option})",
+                    height=max(400, len(offenders) * 30)
+                ).configure(background=app_bg_color)
+                
+                if theme_mode:
+                    gcas_chart = gcas_chart.configure_axis(
+                        labelColor='white', titleColor='white', gridColor='#444'
+                    ).configure_title(color='white')
+                else:
+                    gcas_chart = gcas_chart.configure_axis(
+                        labelColor='black', titleColor='black', gridColor='#eee'
+                    ).configure_title(color='black')
+                
+                st.altair_chart(gcas_chart, use_container_width=True)
+                
+                # Download GCAS Graph Image
+                try:
+                    png_gcas = vlc.vegalite_to_png(gcas_chart.to_json(), scale=2)
+                    st.download_button("Download Graph as PNG", png_gcas, "gcas_offenders_graph.png", "image/png", key='dl_img_gcas')
+                except Exception as e:
+                    st.error(f"Could not generate image: {e}")
             
             # Download Buttons
             csv = offenders.to_csv(index=False).encode('utf-8')
@@ -664,6 +758,14 @@ if uploaded_file is not None:
                     ).configure_title(color='black')
                     
                  st.altair_chart(final_chart, use_container_width=True)
+                 
+                 # Download Weekly Trend Image
+                 try:
+                    png_trend = vlc.vegalite_to_png(final_chart.to_json(), scale=2)
+                    st.download_button("Download Trend Graph as PNG", png_trend, "weekly_trend.png", "image/png", key='dl_img_trend')
+                 except Exception as e:
+                    st.caption(f"Image download unavailable: {e}")
+
             else:
                 st.warning("No data available to plot weekly trend.")
         else:
@@ -726,11 +828,55 @@ if uploaded_file is not None:
             defect_groups = defect_groups.sort_values('PPM Impact', ascending=False)
             
             st.info(f"Showing defect breakdown for {defects_line_option}")
-            st.dataframe(
-                defect_groups.style.format({'PPM Impact': "{:.0f}", 'Defect Count': "{:.0f}"})
-                     .set_properties(**{'background-color': app_bg_color, 'color': app_text_color}),
-                use_container_width=True,
-                hide_index=True
+            
+            # View Toggle
+            view_format = st.radio("View Format", ["Table", "Bar Graph"], horizontal=True, key="defect_view_format")
+            
+            if view_format == "Table":
+                st.dataframe(
+                    defect_groups.style.format({'PPM Impact': "{:.0f}", 'Defect Count': "{:.0f}"})
+                         .set_properties(**{'background-color': app_bg_color, 'color': app_text_color}),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                # Bar Graph View
+                bar_chart = alt.Chart(defect_groups).mark_bar().encode(
+                    x=alt.X('PPM Impact', title='PPM Impact'),
+                    y=alt.Y('Defect Description', sort='-x', title='Defect Description', axis=alt.Axis(labelLimit=1000)),
+                    tooltip=['Defect Description', 'Defect Count', alt.Tooltip('PPM Impact', format=',.0f')]
+                ).properties(
+                    title=f"Hand Written Defect Impact ({defects_line_option})",
+                    height=max(400, len(defect_groups) * 30) # Dynamic height based on number of bars
+                ).configure(background=app_bg_color)
+                
+                # Apply Theme
+                if theme_mode:
+                    bar_chart = bar_chart.configure_axis(
+                        labelColor='white', titleColor='white', gridColor='#444'
+                    ).configure_title(color='white')
+                else:
+                    bar_chart = bar_chart.configure_axis(
+                        labelColor='black', titleColor='black', gridColor='#eee'
+                    ).configure_title(color='black')
+                
+                st.altair_chart(bar_chart, use_container_width=True)
+                
+                # Download Defect Graph Image
+                try:
+                    png_defect = vlc.vegalite_to_png(bar_chart.to_json(), scale=2)
+                    st.download_button("Download Graph as PNG", png_defect, "defect_analysis_graph.png", "image/png", key='dl_img_defect')
+                except Exception as e:
+                    st.error(f"Could not generate image: {e}")
+            
+            # Download Button for Defect Analysis
+            csv_defects = defect_groups.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "Download Defect Analysis as CSV",
+                csv_defects,
+                "defect_analysis.csv",
+                "text/csv",
+                key='download-defect-analysis'
             )
         else:
              if total_good_parts_scope == 0:
@@ -745,3 +891,14 @@ if uploaded_file is not None:
 else:
     st.info("Awaiting CSV file upload in the sidebar.")
     st.write("If you don't have a file, one has been generated as `dummy_data.csv` in your folder.")
+
+# --- Footer ---
+st.markdown("---")
+st.markdown(
+    """
+    <div style='text-align: center; color: grey; padding: 20px 0;'>
+        Copyrights Khaled Senan 19 Jan 2026
+    </div>
+    """,
+    unsafe_allow_html=True
+)
