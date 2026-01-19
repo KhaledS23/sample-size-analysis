@@ -591,6 +591,154 @@ if uploaded_file is not None:
                  st.success("No GCAS exceeds the 2500 PPM limit!")
 
 
+        # --- Graph 3: Weekly PPM Trend ---
+        st.markdown('---')
+        st.markdown('<div class="sub-header">3. Weekly PPM Trend</div>', unsafe_allow_html=True)
+        
+        # Line Filter for Weekly Graph
+        weekly_line_option = st.selectbox("Select Line for Trend Graph", ["All Lines"] + list(df['line_description'].unique()), key='weekly_filter')
+        
+        if weekly_line_option == "All Lines":
+            weekly_data_source = df
+        else:
+            weekly_data_source = df[df['line_description'] == weekly_line_option]
+            
+        if 'DATE' in weekly_data_source.columns:
+            weekly_data_source['Week_Num'] = weekly_data_source['DATE'].dt.isocalendar().week
+            weekly_data_source['Year'] = weekly_data_source['DATE'].dt.year
+            
+            # Group by Year-Week
+            weekly_groups = weekly_data_source.groupby(['Year', 'Week_Num'])
+            weekly_points = []
+            
+            for (year, week), group in weekly_groups:
+                ppm = calculate_ppm(group)
+                weekly_points.append({
+                    'Year': year,
+                    'Week': week,
+                    'Year-Week': f"{year}-W{week}",
+                    'PPM': ppm
+                })
+                
+            df_weekly = pd.DataFrame(weekly_points)
+            
+            if not df_weekly.empty:
+                 # Sort by Year then Week
+                 df_weekly = df_weekly.sort_values(['Year', 'Week'])
+                 
+                 # Altair Trend Line
+                 base_trend = alt.Chart(df_weekly).encode(
+                     x=alt.X('Year-Week', sort=None, title='Week'),
+                     y=alt.Y('PPM', title='PPM'),
+                     tooltip=['Year-Week', 'PPM']
+                 )
+                 
+                 # Main Line (Thicker)
+                 trend_line = base_trend.mark_line(point=False, strokeWidth=3).encode(
+                     color=alt.value('#1E88E5')  # Consistent blue
+                 )
+                 
+                 # Points on top
+                 trend_points = base_trend.mark_circle(size=60).encode(
+                     color=alt.value('#1E88E5')
+                 )
+                 
+                 # Limit Lines
+                 limit_2500 = alt.Chart(pd.DataFrame({'y': [2500]})).mark_rule(color='orange', strokeDash=[5, 5], strokeWidth=2).encode(y='y')
+                 limit_5000 = alt.Chart(pd.DataFrame({'y': [5000]})).mark_rule(color='red', strokeDash=[5, 5], strokeWidth=2).encode(y='y')
+                 
+                 # Combine
+                 final_chart = (trend_line + trend_points + limit_2500 + limit_5000).properties(
+                     title=f"Weekly PPM Trend ({weekly_line_option})",
+                     height=400
+                 ).configure(background=app_bg_color)
+                 
+                 # Apply Theme
+                 if theme_mode:
+                    final_chart = final_chart.configure_axis(
+                        labelColor='white', titleColor='white', gridColor='#444'
+                    ).configure_title(color='white')
+                 else:
+                    final_chart = final_chart.configure_axis(
+                        labelColor='black', titleColor='black', gridColor='#eee'
+                    ).configure_title(color='black')
+                    
+                 st.altair_chart(final_chart, use_container_width=True)
+            else:
+                st.warning("No data available to plot weekly trend.")
+        else:
+            st.error("DATE column missing. Cannot calculate weekly trend.")
+
+
+        # --- Section 4: Defect Analysis Table ---
+        st.markdown('---')
+        st.markdown('<div class="sub-header">4. Hand Written Defect Analysis</div>', unsafe_allow_html=True)
+        
+        # Filter
+        defects_line_option = st.selectbox("Select Line for Defect Analysis", ["All Lines"] + list(df['line_description'].unique()), key='defects_filter')
+        
+        if defects_line_option == "All Lines":
+            defects_data_source = df
+        else:
+            defects_data_source = df[df['line_description'] == defects_line_option]
+            
+        # 1. Total Good Parts (Denominator for PPM)
+        # We need the sum of all Good Parts in the selected scope to calculate the "Impact" of each defect type relative to total production
+        total_good_parts_scope = defects_data_source[defects_data_source['is_good']]['count'].sum()
+        
+        # 2. Filter for Defects Only
+        # All rows marked as is_defect
+        defect_rows = defects_data_source[defects_data_source['is_defect']]
+        
+        if not defect_rows.empty and total_good_parts_scope > 0:
+            # Normalize Defect Description to remove Operator names
+            # Copy to avoid SettingWithCopyWarning
+            defect_analysis_df = defect_rows.copy()
+            
+            # Remove "Operator 1", "Operator 2", etc. (case insensitive)
+            defect_analysis_df['normalized_desc'] = defect_analysis_df['counter_type_description'].astype(str).str.replace(r'operator\s*[0-9]+', '', case=False, regex=True)
+            
+            # Remove "Hand written errors" (case insensitive)
+            defect_analysis_df['normalized_desc'] = defect_analysis_df['normalized_desc'].str.replace(r'hand written errors', '', case=False, regex=True)
+            
+            # Clean up whitespace
+            defect_analysis_df['normalized_desc'] = defect_analysis_df['normalized_desc'].str.strip()
+            defect_analysis_df['normalized_desc'] = defect_analysis_df['normalized_desc'].str.replace(r'\s+', ' ', regex=True)
+
+            # Group by Normalized Defect Description
+            defect_groups = defect_analysis_df.groupby('normalized_desc')['count'].sum().reset_index()
+            
+            # Calculate PPM Impact for each defect type
+            # PPM = (Defect Count / (Defect Count + Total Good)) * 1,000,000
+            # Note: Usage of (Defect + Good) in denominator is standard, 
+            # but usually for *specific* defect rate we might just use Total Parts (Good + All Defects). 
+            # Let's stick to the simple approximation: Impact PPM = (This Defect Count / Total Good) * 1M for ranking purposes, 
+            # or better: (This Defect Count / (Total Good + Total Defects this scope)) * 1M.
+            
+            total_parts_scope = total_good_parts_scope + defect_rows['count'].sum()
+            
+            defect_groups['PPM Impact'] = (defect_groups['count'] / total_parts_scope) * 1_000_000
+            
+            # Rename for display
+            defect_groups = defect_groups.rename(columns={'normalized_desc': 'Defect Description', 'count': 'Defect Count'})
+            
+            # Sort
+            defect_groups = defect_groups.sort_values('PPM Impact', ascending=False)
+            
+            st.info(f"Showing defect breakdown for {defects_line_option}")
+            st.dataframe(
+                defect_groups.style.format({'PPM Impact': "{:.0f}", 'Defect Count': "{:.0f}"})
+                     .set_properties(**{'background-color': app_bg_color, 'color': app_text_color}),
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+             if total_good_parts_scope == 0:
+                 st.warning("Total Good Parts is 0, cannot calculate PPM impact.")
+             else:
+                 st.success("No defects found in this selection.")
+
+
     except Exception as e:
         st.error(f"Error processing file: {e}")
 
